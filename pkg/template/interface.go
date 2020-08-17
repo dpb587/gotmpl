@@ -7,8 +7,10 @@ import (
 type FuncMap map[string]interface{}
 
 type Template interface {
+	Name() string
+
 	Parse(string) (Template, error)
-	ParseFiles(...string) (Template, error)
+	ParseNamed(string, string) (Template, error)
 
 	Funcs(funcMap FuncMap) Template
 

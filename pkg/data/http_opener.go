@@ -6,21 +6,21 @@ import (
 	"net/http"
 )
 
-type URLOpener struct {
+type HTTPOpener struct {
 	client *http.Client
 	url    string
 }
 
-func NewURLOpener(client *http.Client, url string) *URLOpener {
-	return &URLOpener{
+func NewHTTPOpener(client *http.Client, url string) *HTTPOpener {
+	return &HTTPOpener{
 		client: client,
 		url:    url,
 	}
 }
 
-var _ Opener = &URLOpener{}
+var _ Opener = &HTTPOpener{}
 
-func (o URLOpener) Open() (io.ReadCloser, error) {
+func (o HTTPOpener) Open() (io.ReadCloser, error) {
 	res, err := o.client.Get(o.url)
 	if err != nil {
 		return nil, err

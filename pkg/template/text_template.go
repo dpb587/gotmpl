@@ -3,6 +3,8 @@ package template
 import (
 	"io"
 	"text/template"
+
+	"github.com/pkg/errors"
 )
 
 type textTemplate struct {
@@ -10,6 +12,10 @@ type textTemplate struct {
 }
 
 var _ Template = &textTemplate{}
+
+func (t *textTemplate) Name() string {
+	return t.tmpl.Name()
+}
 
 func (t *textTemplate) Parse(text string) (Template, error) {
 	tmpl, err := t.tmpl.Parse(text)
@@ -24,10 +30,15 @@ func (t *textTemplate) Parse(text string) (Template, error) {
 	return res, nil
 }
 
-func (t *textTemplate) ParseFiles(filenames ...string) (Template, error) {
-	tmpl, err := t.tmpl.ParseFiles(filenames...)
+func (t *textTemplate) ParseNamed(name string, text string) (Template, error) {
+	tmpl, err := template.New(name).Parse(text)
 	if err != nil {
 		return nil, err
+	}
+
+	tmpl, err = t.tmpl.AddParseTree(name, tmpl.Tree)
+	if err != nil {
+		return nil, errors.Wrapf(err, "adopting %s", name)
 	}
 
 	res := &textTemplate{

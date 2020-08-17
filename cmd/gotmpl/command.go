@@ -1,35 +1,33 @@
 package gotmpl
 
 import (
-	"io"
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/dpb587/gotmpl/pkg/cliopt"
 	"github.com/dpb587/gotmpl/pkg/data"
+	gotmplioutil "github.com/dpb587/gotmpl/pkg/ioutil"
 	"github.com/dpb587/gotmpl/pkg/template"
 	"github.com/pkg/errors"
 )
 
 type DataOptions struct {
-	JSONFiles cliopt.KeyValueList `long:"json-file" description:"path to a JSON file for data" value-name:"[KEY=]PATH"`
-	JSONURLs  cliopt.KeyValueList `long:"json-url" description:"download URL to a JSON file for data" value-name:"[KEY=]URL"`
-
-	YAMLFiles cliopt.KeyValueList `long:"yaml-file" description:"path to a YAML file for data" value-name:"[KEY=]PATH"`
-	YAMLURLs  cliopt.KeyValueList `long:"yaml-url" description:"download URL to a YAML file for data" value-name:"[KEY=]URL"`
-
-	TextFiles cliopt.KeyValueList `long:"text-file" description:"path to a file for raw data" value-name:"[KEY=]PATH"`
-	TextURLs  cliopt.KeyValueList `long:"text-url" description:"download URL to a file for raw data" value-name:"[KEY=]URL"`
+	JSON cliopt.DataSourceList `long:"json" description:"file or URL to JSON data" value-name:"[KEY=]URI"`
+	YAML cliopt.DataSourceList `long:"yaml" description:"file or URL to YAML data" value-name:"[KEY=]URI"`
+	Raw  cliopt.DataSourceList `long:"raw" description:"file or URL to raw data" value-name:"[KEY=]URI"`
 }
 
 type TemplateOptions struct {
-	Template []string `long:"template" description:"inline template to parse" value-name:"TEMPLATE"`
+	Template       []string `long:"template" description:"inline template to parse" value-name:"TEMPLATE"`
+	NamedTemplates bool     `long:"named-templates" description:"import templates as named blocks based on file name"`
 }
 
 type OutputOptions struct {
-	OutputType string              `long:"output-type" description:"type of output to produce (values: html, text)" default:"text"`
-	Output     cliopt.KeyValueList `long:"output" description:"write result to file" value-name:"[BLOCK=]PATH"`
+	Output      cliopt.BlockOutputList `long:"output" description:"write result to file (with optional template block)" value-name:"PATH[=BLOCK]"`
+	OutputBlock string                 `long:"output-block" description:"default template block to render" value-name:"BLOCK"`
+	OutputType  string                 `long:"output-type" description:"type of output to produce (values: html, text)" default:"text"`
 }
 
 type Command struct {
@@ -45,18 +43,26 @@ type CommandArgs struct {
 }
 
 func (c *Command) Execute(_ []string) error {
+	log := c.Runtime.Logger()
+
 	tmpl, err := template.New(c.OutputOptions.OutputType)
 	if err != nil {
 		return err
 	}
 
 	{ // templates
-		var templateCount int
+		log.Debugf("loading templates")
+
+		var templateFileCount int
 
 		for _, templateGlob := range c.Args.Templates {
 			templateFiles, err := filepath.Glob(templateGlob)
 			if err != nil {
 				return errors.Wrapf(err, "matching %s", templateGlob)
+			}
+
+			if len(templateFiles) == 0 {
+				log.Warnf("no templates matched pattern: %s", templateGlob)
 			}
 
 			for _, templateFile := range templateFiles {
@@ -65,26 +71,40 @@ func (c *Command) Execute(_ []string) error {
 					return errors.Wrapf(err, "reading %s", templateFile)
 				}
 
-				tmpl, err = tmpl.Parse(string(buf))
+				if c.TemplateOptions.NamedTemplates {
+					tmpl, err = tmpl.ParseNamed(filepath.Base(templateFile), string(buf))
+				} else {
+					tmpl, err = tmpl.Parse(string(buf))
+				}
+
 				if err != nil {
 					return errors.Wrapf(err, "parsing %s", templateFile)
 				}
 
-				templateCount++
+				log.Debugf("loaded template (%s)", templateFile)
+
+				templateFileCount++
 			}
 		}
 
-		for templateRawIdx, templateRaw := range c.TemplateOptions.Template {
-			tmpl, err = tmpl.Parse(templateRaw)
-			if err != nil {
-				return errors.Wrapf(err, "parsing inline template %d", templateRawIdx)
+		var templateInlineCount int
+
+		if inline := c.TemplateOptions.Template; len(inline) > 0 {
+			for templateRawIdx, templateRaw := range inline {
+				tmpl, err = tmpl.Parse(templateRaw)
+				if err != nil {
+					return errors.Wrapf(err, "parsing inline template %d", templateRawIdx)
+				}
+
+				templateInlineCount++
 			}
 
-			templateCount++
 		}
 
-		if templateCount == 0 {
-			return errors.New("missing template")
+		log.Infof("loaded templates (files: %d, inlines: %d)", templateFileCount, templateInlineCount)
+
+		if templateFileCount+templateInlineCount == 0 {
+			return errors.New("no templates found")
 		}
 	}
 
@@ -94,77 +114,37 @@ func (c *Command) Execute(_ []string) error {
 		var sources []*data.Source
 		httpClient := c.Runtime.NewHTTPClient()
 
-		for _, opt := range c.DataOptions.JSONFiles {
-			sources = append(
-				sources,
-				data.NewSource(
-					opt.Key,
-					data.NewFileOpener(opt.Value),
-					data.JSON,
-				),
-			)
+		for parser, rawSources := range map[data.Parser]cliopt.DataSourceList{
+			data.JSON: c.DataOptions.JSON,
+			data.YAML: c.DataOptions.YAML,
+			data.Raw:  c.DataOptions.Raw,
+		} {
+			for _, rawSource := range rawSources {
+				var source data.Opener
+
+				if strings.HasPrefix(rawSource.URI, "http://") || strings.HasPrefix(rawSource.URI, "https://") {
+					source = data.NewHTTPOpener(httpClient, rawSource.URI)
+				} else if rawSource.URI == "/dev/stdin" || rawSource.URI == "-" {
+					source = data.NewReaderOpener(os.Stdin)
+				} else {
+					source = data.NewFileOpener(rawSource.URI)
+				}
+
+				sources = append(sources, data.NewSource(rawSource.Key, source, parser))
+			}
 		}
 
-		for _, opt := range c.DataOptions.JSONURLs {
-			sources = append(
-				sources,
-				data.NewSource(
-					opt.Key,
-					data.NewURLOpener(httpClient, opt.Value),
-					data.JSON,
-				),
-			)
-		}
+		if len(sources) > 0 {
+			log.Debugf("loading data sources")
 
-		for _, opt := range c.DataOptions.YAMLFiles {
-			sources = append(
-				sources,
-				data.NewSource(
-					opt.Key,
-					data.NewFileOpener(opt.Value),
-					data.YAML,
-				),
-			)
-		}
+			dataWrap := data.NewData(sources...)
 
-		for _, opt := range c.DataOptions.YAMLURLs {
-			sources = append(
-				sources,
-				data.NewSource(
-					opt.Key,
-					data.NewURLOpener(httpClient, opt.Value),
-					data.YAML,
-				),
-			)
-		}
+			tmplData, err = dataWrap.Data()
+			if err != nil {
+				return errors.Wrap(err, "loading data")
+			}
 
-		for _, opt := range c.DataOptions.TextFiles {
-			sources = append(
-				sources,
-				data.NewSource(
-					opt.Key,
-					data.NewFileOpener(opt.Value),
-					data.Raw,
-				),
-			)
-		}
-
-		for _, opt := range c.DataOptions.TextURLs {
-			sources = append(
-				sources,
-				data.NewSource(
-					opt.Key,
-					data.NewURLOpener(httpClient, opt.Value),
-					data.Raw,
-				),
-			)
-		}
-
-		dataWrap := data.NewData(sources...)
-
-		tmplData, err = dataWrap.Data()
-		if err != nil {
-			return errors.Wrap(err, "loading data")
+			log.Info("loaded data sources")
 		}
 	}
 
@@ -172,42 +152,38 @@ func (c *Command) Execute(_ []string) error {
 		outps := c.OutputOptions.Output
 
 		if len(outps) == 0 {
-			outps = append(outps, cliopt.KeyValue{Key: "", Value: "-"})
+			outps = append(outps, cliopt.BlockOutput{Block: "", Path: "/dev/stdout"})
 		}
 
-		for _, outp := range outps {
-			outBlock := outp.Key
-			outPath := outp.Value
-
-			if outp.Key != "" {
-				outBlock = outp.Value
-				outPath = outp.Key
+		for outpIdx, outp := range outps {
+			if outp.Block == "" {
+				outp.Block = c.OutputOptions.OutputBlock
 			}
 
-			var out io.Writer
+			log.Debugf("rendering %s from block %s", outp.PathLabel(), outp.BlockLabel(tmpl.Name()))
 
-			if outPath == "-" {
-				out = os.Stdout
-			} else {
-				fh, err := os.OpenFile(outPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-				if err != nil {
-					return errors.Wrapf(err, "opening %s", outPath)
-				}
-
-				defer fh.Close() // TODO immediate
-
-				out = fh
+			out, closer, err := outp.Open()
+			if err != nil {
+				return errors.Wrapf(err, "rendering output %d", outpIdx)
 			}
 
-			if outBlock == "" {
-				err = tmpl.Execute(out, tmplData)
+			outw := gotmplioutil.NewWriterCounter(out)
+
+			if v := outp.Block; v != "" {
+				err = tmpl.ExecuteTemplate(outw, v, tmplData)
 			} else {
-				err = tmpl.ExecuteTemplate(out, outBlock, tmplData)
+				err = tmpl.Execute(outw, tmplData)
+			}
+
+			if closer != nil {
+				closer()
 			}
 
 			if err != nil {
 				return errors.Wrap(err, "rendering")
 			}
+
+			log.Infof("rendered %s from block %s (bytes: %d)", outp.PathLabel(), outp.BlockLabel(tmpl.Name()), outw.WriteLength())
 		}
 	}
 
