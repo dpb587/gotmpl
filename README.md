@@ -56,6 +56,16 @@ $ gotmpl templates/*.tmpl \
   --output results.csv=csv
 ```
 
+Use `--help` to see the full list of options for more advanced usage.
+
+### Installation
+
+Binaries for Linux, macOS, and Windows can be downloaded from the [releases](https://github.com/dpb587/gotmpl/releases) page. A [Homebrew](https://brew.sh/) recipe is also available for Linux and macOS.
+
+```
+brew install dpb587/tap/gotmpl
+```
+
 ## Alternatives
 
  * [`consul-template`](https://github.com/hashicorp/consul-template) – similar for Consul and Vault integration
