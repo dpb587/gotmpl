@@ -69,6 +69,8 @@ brew install dpb587/tap/gotmpl
 ## Alternatives
 
  * [`consul-template`](https://github.com/hashicorp/consul-template) – similar for Consul and Vault integration
+ * [`gotmpl`](https://github.com/NateScarlet/gotmpl) - with JSON and template support
+ * [`gotmplcli`](https://github.com/zbblanton/gotmplcli) - with YAML and basic template support
 
 ## License
 
